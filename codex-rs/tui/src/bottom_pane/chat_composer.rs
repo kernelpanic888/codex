@@ -12,6 +12,8 @@
 //!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
+//! With shell commands enabled, ordinary editing keys never infer shell mode only from the
+//! resulting buffer; deleting text that exposes an existing leading `!` leaves it literal.
 //!
 //! # Mention Menus
 //!
@@ -3804,9 +3806,16 @@ impl ChatComposer {
             return (InputResult::None, true);
         }
 
+        let typed_bash_prefix = !self.draft.is_bash_mode
+            && matches!(input.code, KeyCode::Char('!'))
+            && !has_non_text_modifier
+            && self.draft.textarea.cursor() == 0;
+
         self.begin_vim_edit(input);
         self.draft.textarea.input(input);
-        self.sync_bash_mode_from_text();
+        if typed_bash_prefix {
+            self.sync_bash_mode_from_text();
+        }
 
         if let Some(elements_before) = elements_before {
             self.reconcile_deleted_elements(elements_before);
@@ -5810,6 +5819,37 @@ mod tests {
         assert!(needs_redraw);
         assert!(!composer.draft.is_bash_mode);
         assert_eq!(composer.current_text(), "");
+    }
+
+    #[test]
+    fn deleting_text_before_bang_does_not_enter_shell_mode() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ true,
+        );
+
+        type_chars_humanlike(
+            &mut composer,
+            &[
+                'Y', 'e', 's', '!', ' ', 'I', ' ', 'a', 'g', 'r', 'e', 'e', '.',
+            ],
+        );
+        composer.handle_key_event(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        for _ in 0..3 {
+            composer.handle_key_event(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        }
+
+        assert!(!composer.draft.is_bash_mode);
+        assert_eq!(composer.current_text(), "! I agree.");
     }
 
     #[test]
